@@ -1,0 +1,539 @@
+diff --git a/src/wifi/CMakeLists.txt b/src/wifi/CMakeLists.txt
+index 1e26bf5c4..54131dfbc 100644
+--- a/src/wifi/CMakeLists.txt
++++ b/src/wifi/CMakeLists.txt
+@@ -13,6 +13,7 @@ set(source_files
+     helper/wifi-radio-energy-model-helper.cc
+     helper/yans-wifi-helper.cc
+     helper/wifi-phy-rx-trace-helper.cc
++    helper/wifi-tx-stats-helper.cc
+     model/addba-extension.cc
+     model/adhoc-wifi-mac.cc
+     model/ampdu-subframe-header.cc
+@@ -176,6 +177,7 @@ set(header_files
+     helper/wifi-radio-energy-model-helper.h
+     helper/yans-wifi-helper.h
+     helper/wifi-phy-rx-trace-helper.h
++    helper/wifi-tx-stats-helper.h
+     model/addba-extension.h
+     model/adhoc-wifi-mac.h
+     model/ampdu-subframe-header.h
+diff --git a/src/wifi/helper/wifi-tx-stats-helper.cc b/src/wifi/helper/wifi-tx-stats-helper.cc
+new file mode 100644
+index 000000000..3f53bd487
+--- /dev/null
++++ b/src/wifi/helper/wifi-tx-stats-helper.cc
+@@ -0,0 +1,310 @@
++/*
++ * Copyright (c) 2024 Huazhong University of Science and Technology
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation;
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++
++#include "wifi-tx-stats-helper.h"
++
++#include <ns3/nstime.h>
++#include <ns3/wifi-net-device.h>
++#include <ns3/net-device-container.h>
++#include <ns3/wifi-mac-queue.h>
++#include <ns3/frame-exchange-manager.h>
++#include <ns3/node-container.h>
++
++namespace ns3
++{
++
++WifiTxStatsHelper::WifiTxStatsHelper()
++{
++}
++
++void WifiTxStatsHelper::Enable(NodeContainer nodes, const std::map<Mac48Address, uint32_t> &MacToNodeMap)
++{
++    NetDeviceContainer devCon;
++    for (auto node = nodes.Begin(); node != nodes.End(); ++node)
++    {
++        Ptr<NetDevice> dev = (*node)->GetDevice(0);
++        NS_ASSERT_MSG(dev, "net device should exist");
++        devCon.Add(dev);
++    }
++    Enable(devCon);
++}
++
++void
++WifiTxStatsHelper::Enable(const NetDeviceContainer& devices)
++{
++    NS_ABORT_MSG_IF(m_traceSink, "A trace sink is already configured for this helper");
++    m_traceSink = CreateObject<WifiTxStatsTraceSink>();
++
++    for (auto dev = devices.Begin(); dev != devices.End(); ++dev)
++    {
++        Ptr<WifiNetDevice> wifiDev = DynamicCast<WifiNetDevice>(*dev);
++        if (wifiDev)
++        {
++            for (auto& ac : m_aci)
++            {
++                if (wifiDev->GetMac()->GetTxopQueue(ac))
++                {
++                    // Trace enqueue & dequeue for available ACs
++                    wifiDev->GetMac()->GetTxopQueue(ac)->TraceConnectWithoutContext(
++                        "Enqueue",
++                        MakeCallback(&WifiTxStatsTraceSink::NotifyMacEnqueue, m_traceSink));
++                    wifiDev->GetMac()->GetTxopQueue(ac)->TraceConnectWithoutContext(
++                        "Dequeue",
++                        MakeCallback(&WifiTxStatsTraceSink::NotifyMacDequeue, m_traceSink));
++                }
++                if (wifiDev->GetMac()->GetQosTxop(ac))
++                {
++                    // Handle Block Ack for QoS ACs
++                    wifiDev->GetMac()->GetQosTxop(ac)->GetBaManager()->TraceConnectWithoutContext(
++                        "AckedMpdu",
++                        MakeCallback(&WifiTxStatsTraceSink::NotifyAcked, m_traceSink));
++                }
++            }
++
++            for (int i = 0; i < wifiDev->GetNPhys(); i++)
++            {
++                // Handle non-Block Ack
++                wifiDev->GetMac()->GetFrameExchangeManager(i)->TraceConnectWithoutContext(
++                    "AckedMpdu",
++                    MakeCallback(&WifiTxStatsTraceSink::NotifyAcked, m_traceSink));
++                wifiDev->GetPhy(i)->TraceConnectWithoutContext(
++                    "PhyTxBegin",
++                    MakeCallback(&WifiTxStatsTraceSink::NotifyTxStart, m_traceSink));
++            }
++        }
++    }
++}
++
++WifiTxStatistics
++WifiTxStatsHelper::GetStatistics()
++{
++    NS_ABORT_MSG_IF(!m_traceSink, "WifiTxStatsHelper not enabled.");
++    return m_traceSink->DoGetStatistics();
++}
++
++const WifiPktTxRecordMap&
++WifiTxStatsHelper::GetSuccessInfoMap()
++{
++    NS_ABORT_MSG_IF(!m_traceSink, "WifiTxStatsHelper not enabled.");
++    return m_traceSink->DoGetSuccessInfoMap();
++}
++
++const WifiPktNodeIdMap&
++WifiTxStatsHelper::GetFailureInfoMap()
++{
++    NS_ABORT_MSG_IF(!m_traceSink, "WifiTxStatsHelper not enabled.");
++    return m_traceSink->DoGetFailureInfoMap();
++}
++
++void
++WifiTxStatsHelper::Start(const Time& startTime)
++{
++    NS_ABORT_MSG_IF(!m_traceSink, "WifiTxStatsHelper not enabled.");
++    Simulator::Schedule(startTime, &WifiTxStatsTraceSink::DoStart, m_traceSink);
++}
++
++void
++WifiTxStatsHelper::Stop(const Time& stopTime)
++{
++    NS_ABORT_MSG_IF(!m_traceSink, "WifiTxStatsHelper not enabled.");
++    Simulator::Schedule(stopTime, &WifiTxStatsTraceSink::DoStop, m_traceSink);
++}
++
++void
++WifiTxStatsHelper::Reset()
++{
++    NS_ABORT_MSG_IF(!m_traceSink, "WifiTxStatsHelper not enabled.");
++    m_traceSink->DoReset();
++}
++
++NS_OBJECT_ENSURE_REGISTERED(WifiTxStatsTraceSink);
++
++WifiTxStatsTraceSink::WifiTxStatsTraceSink() : m_statsCollecting(false)
++{
++}
++
++TypeId
++WifiTxStatsTraceSink::GetTypeId()
++{
++    static TypeId tid =
++        TypeId("ns3::WifiTxStatsTraceSink")
++            .SetParent<Object>()
++            .SetGroupName("Wifi")
++            .AddConstructor<WifiTxStatsTraceSink>();
++    return tid;
++}
++
++void
++WifiTxStatsTraceSink::DoStart()
++{
++    m_statsCollecting = true;
++}
++
++void
++WifiTxStatsTraceSink::DoStop()
++{
++    m_statsCollecting = false;
++}
++
++void
++WifiTxStatsTraceSink::DoReset()
++{
++    m_inflightMap.clear();
++    m_successMap.clear();
++    m_failureMap.clear();
++}
++
++WifiTxStatistics
++WifiTxStatsTraceSink::DoGetStatistics() const
++{
++    WifiTxStatistics results;
++    std::map<uint32_t /* Node ID */, uint64_t> numSuccessPerNode;
++    // Iterate through success map
++    for (const auto& [nodeId, linkMap] : m_successMap)
++    {
++        for (const auto& [linkId, recordVec] : linkMap)
++        {
++            for (const auto& record : recordVec)
++            {
++                results.m_numSuccessPerNodeLink[nodeId][linkId]++;
++                numSuccessPerNode[nodeId]++;
++                if (record.m_failures > 0)
++                {
++                    results.m_numRetransmittedPktsPerNode[nodeId]++;
++                    results.m_numRetransmissionPerNode[nodeId] += record.m_failures;
++                }
++            }
++        }
++    }
++    // Iterate through failure map
++    for (const auto& [nodeId, recordVec] : m_failureMap)
++    {
++        results.m_numFinalFailedPerNode[nodeId] += recordVec.size();
++    }
++    // Get total results
++    for (const auto& [nodeId, linkMap] : results.m_numSuccessPerNodeLink)
++    {
++        for (const auto& [linkId, pktNum] : linkMap)
++        {
++            results.m_numSuccess += pktNum;
++        }
++    }
++    for (const auto& [nodeId, num] : results.m_numRetransmittedPktsPerNode)
++    {
++        results.m_numRetransmitted += num;
++    }
++    uint64_t numRetransmission = 0;
++    for (const auto&[nodeId, num] : results.m_numRetransmissionPerNode)
++    {
++        results.m_avgFailuresPerNode[nodeId] = static_cast<long double>(num) /
++            numSuccessPerNode[nodeId];
++        numRetransmission += num;
++    }
++    results.m_avgFailures = static_cast<long double>(numRetransmission) / results.m_numSuccess;
++    for (const auto &[nodeId, num]: results.m_numFinalFailedPerNode)
++    {
++        results.m_numFinalFailed += num;
++    }
++    return results;
++}
++
++const WifiPktTxRecordMap&
++WifiTxStatsTraceSink::DoGetSuccessInfoMap()
++{
++    return m_successMap;
++}
++
++const WifiPktNodeIdMap&
++WifiTxStatsTraceSink::DoGetFailureInfoMap()
++{
++    return m_failureMap;
++}
++
++void
++WifiTxStatsTraceSink::NotifyMacEnqueue(Ptr<const WifiMpdu> mpdu)
++{
++    if (mpdu->GetHeader().IsData())
++    {
++        if (mpdu->GetPacketSize() == 0)
++        {
++            // exclude Null frame
++            return;
++        }
++        WifiTxPerPktRecord record;
++        record.m_srcNodeId = Simulator::GetContext();
++        record.m_enqueueMs = Simulator::Now().ToDouble(Time::MS);
++        record.m_tid = mpdu->GetHeader().IsQosData() ? mpdu->GetHeader().GetQosTid() : 0;
++        m_inflightMap[mpdu->GetPacket()->GetUid()] = record;
++    }
++}
++
++void
++WifiTxStatsTraceSink::NotifyTxStart(Ptr<const Packet> pkt, double txPowerW)
++{
++    if (const auto mapIt = m_inflightMap.find(pkt->GetUid()); mapIt != m_inflightMap.end())
++    {
++        if (!mapIt->second.m_txStarted)
++        {
++            mapIt->second.m_txStarted = true;
++            mapIt->second.m_txStartMs = Simulator::Now().ToDouble(Time::MS);
++        }
++        else
++        {
++            mapIt->second.m_failures++;
++        }
++    }
++}
++
++void
++WifiTxStatsTraceSink::NotifyAcked(Ptr<const WifiMpdu> mpdu, const uint8_t linkId)
++{
++    if (const auto mapIt = m_inflightMap.find(mpdu->GetPacket()->GetUid()); mapIt != m_inflightMap.end())
++    {
++        mapIt->second.m_acked = true;
++        mapIt->second.m_ackMs = Simulator::Now().ToDouble(Time::MS);
++        mapIt->second.m_successLinkId = linkId;
++    }
++}
++
++void
++WifiTxStatsTraceSink::NotifyMacDequeue(Ptr<const WifiMpdu> mpdu)
++{
++    if (const auto mapIt = m_inflightMap.find(mpdu->GetPacket()->GetUid()); mapIt != m_inflightMap.end())
++    {
++        mapIt->second.m_dequeued = true;
++        mapIt->second.m_dequeueMs = Simulator::Now().ToDouble(Time::MS);
++        mapIt->second.m_seqNum = mpdu->GetHeader().GetSequenceNumber();
++
++        if (m_statsCollecting)
++        {
++            if (mapIt->second.m_acked)
++            {
++                // Put record into success map and remove it from inflight map
++                m_successMap[mapIt->second.m_srcNodeId][mapIt->second.m_successLinkId].emplace_back(mapIt->second);
++            }
++            else
++            {
++                mapIt->second.m_failures += 1;
++                // Put record into failure map and remove it from inflight map
++                m_failureMap[mapIt->second.m_srcNodeId].emplace_back(mapIt->second);
++            }
++        }
++        m_inflightMap.erase(mapIt);
++    }
++}
++
++}
+diff --git a/src/wifi/helper/wifi-tx-stats-helper.h b/src/wifi/helper/wifi-tx-stats-helper.h
+new file mode 100644
+index 000000000..670ea1c46
+--- /dev/null
++++ b/src/wifi/helper/wifi-tx-stats-helper.h
+@@ -0,0 +1,133 @@
++/*
++ * Copyright (c) 2024 Huazhong University of Science and Technology
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation;
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++
++#ifndef WIFI_TX_STATS_HELPER_H
++#define WIFI_TX_STATS_HELPER_H
++
++#include <cstdint>
++#include <map>
++#include <vector>
++#include <ranges>
++
++#include <ns3/object.h>
++#include <ns3/type-id.h>
++#include <ns3/qos-utils.h>
++#include <ns3/nstime.h>
++
++namespace ns3
++{
++
++// The final result
++struct WifiTxStatistics
++{
++    std::map<uint32_t /* Node ID */, std::map<uint8_t /* Link ID */, uint64_t>> m_numSuccessPerNodeLink; // # successful pkts
++    std::map<uint32_t /* Node ID */, uint64_t> m_numRetransmittedPktsPerNode; // # successful pkts with 2 or more TX
++    std::map<uint32_t /* Node ID */, uint64_t> m_numRetransmissionPerNode; // # retransmissions (i.e. failures)
++    std::map<uint32_t /* Node ID */, double> m_avgFailuresPerNode; // # retransmissions / # successful pkts
++    std::map<uint32_t /* Node ID */, uint64_t> m_numFinalFailedPerNode; // # failed pkts
++    uint64_t m_numSuccess{0};
++    uint64_t m_numRetransmitted{0};
++    double m_avgFailures{0};
++    uint64_t m_numFinalFailed{0};
++};
++
++// Per-packet record, created when enqueued at MAC layer
++struct WifiTxPerPktRecord
++{
++    bool m_txStarted{false};
++    bool m_acked{false};
++    bool m_dequeued{false};
++    uint64_t m_seqNum{0};
++    uint32_t m_srcNodeId{0};
++    uint32_t m_failures{0};
++    double m_enqueueMs{0};
++    double m_txStartMs{0};
++    double m_ackMs{0};
++    double m_dequeueMs{0};
++    uint8_t m_tid{0};
++    uint8_t m_successLinkId{0};
++};
++typedef std::map<uint32_t /* Node ID */, std::map<uint8_t /* Link ID */, std::vector<WifiTxPerPktRecord>>> WifiPktTxRecordMap;
++typedef std::map<uint64_t /* UID */, WifiTxPerPktRecord> WifiPktUidMap;
++typedef std::map<uint32_t /* Node ID */, std::vector<WifiTxPerPktRecord>> WifiPktNodeIdMap;
++
++// Forward declaration
++class NetDeviceContainer;
++class NodeContainer;
++class Time;
++class Packet;
++class WifiMpdu;
++class WifiTxStatsTraceSink;
++
++class WifiTxStatsHelper
++{
++  public:
++    WifiTxStatsHelper();
++    /**
++     * Enables trace collection for all nodes and WifiNetDevices in the specified NodeContainer.
++     * @param nodes The NodeContainer to which traces are to be connected.
++     * @param MacToNodeMap (optional) A mapping from MAC address to node ID. If not provided, a
++     * mapping is built automatically.
++     */
++    void Enable(NodeContainer nodes, const std::map<Mac48Address, uint32_t>& MacToNodeMap = {});
++    void Enable(const NetDeviceContainer& devices);
++    WifiTxStatistics GetStatistics();
++    const WifiPktTxRecordMap& GetSuccessInfoMap();
++    const WifiPktNodeIdMap& GetFailureInfoMap();
++    void Start(const Time& startTime);
++    void Stop(const Time& stopTime);
++    void Reset();
++    const std::list<AcIndex> m_aci = {
++        AC_BE,
++        AC_BK,
++        AC_VI,
++        AC_VO,
++        AC_BE_NQOS
++    };
++
++  private:
++    Ptr<WifiTxStatsTraceSink> m_traceSink;
++};
++
++class WifiTxStatsTraceSink : public Object
++{
++  public:
++    WifiTxStatsTraceSink();
++    static TypeId GetTypeId();
++    void DoStart();
++    void DoStop();
++    void DoReset();
++    WifiTxStatistics DoGetStatistics() const;
++    const WifiPktTxRecordMap& DoGetSuccessInfoMap();
++    const WifiPktNodeIdMap& DoGetFailureInfoMap();
++
++    // functions to be called back
++    void NotifyMacEnqueue(Ptr<const WifiMpdu> mpdu);
++    void NotifyTxStart(Ptr<const Packet> pkt, double txPowerW);
++    void NotifyAcked(Ptr<const WifiMpdu> mpdu, uint8_t linkId);
++    void NotifyMacDequeue(Ptr<const WifiMpdu> mpdu);
++
++  private:
++    bool m_statsCollecting;
++    WifiPktUidMap m_inflightMap;
++    WifiPktTxRecordMap m_successMap;
++    WifiPktNodeIdMap m_failureMap;
++};
++
++}
++
++#endif // WIFI_TX_STATS_HELPER_H
+diff --git a/src/wifi/model/block-ack-manager.cc b/src/wifi/model/block-ack-manager.cc
+index 545af2486..038a60952 100644
+--- a/src/wifi/model/block-ack-manager.cc
++++ b/src/wifi/model/block-ack-manager.cc
+@@ -40,7 +40,12 @@ BlockAckManager::GetTypeId()
+             .AddTraceSource("AgreementState",
+                             "The state of the ADDBA handshake",
+                             MakeTraceSourceAccessor(&BlockAckManager::m_originatorAgreementState),
+-                            "ns3::BlockAckManager::AgreementStateTracedCallback");
++                            "ns3::BlockAckManager::AgreementStateTracedCallback")
++            .AddTraceSource("AckedMpdu",
++                        "An MPDU that was successfully acknowledged, via either a "
++                        "Normal Ack or a Block Ack.",
++                        MakeTraceSourceAccessor(&BlockAckManager::m_ackMpduCallback),
++                        "ns3::BlockAckManager::MpduAndLinkIdTracedCallback");
+     return tid;
+ }
+ 
+@@ -375,6 +380,10 @@ BlockAckManager::NotifyGotAck(uint8_t linkId, Ptr<const WifiMpdu> mpdu)
+     {
+         if ((*queueIt)->GetHeader().GetSequenceNumber() == mpdu->GetHeader().GetSequenceNumber())
+         {
++            if (!m_ackMpduCallback.IsEmpty())
++            {
++                m_ackMpduCallback(*queueIt, *((*queueIt)->GetInFlightLinkIds().begin()));
++            }
+             m_queue->DequeueIfQueued({*queueIt});
+             HandleInFlightMpdu(linkId, queueIt, ACKNOWLEDGED, it, Simulator::Now());
+             break;
+@@ -464,6 +473,10 @@ BlockAckManager::NotifyGotBlockAck(uint8_t linkId,
+             {
+                 m_txOkCallback(*queueIt);
+             }
++            if (!m_ackMpduCallback.IsEmpty())
++            {
++                m_ackMpduCallback(*queueIt, *((*queueIt)->GetInFlightLinkIds().begin()));
++            }
+             acked.emplace_back(*queueIt);
+             queueIt = HandleInFlightMpdu(linkId, queueIt, ACKNOWLEDGED, it, now);
+         }
+diff --git a/src/wifi/model/block-ack-manager.h b/src/wifi/model/block-ack-manager.h
+index 3d39f10cb..01757e168 100644
+--- a/src/wifi/model/block-ack-manager.h
++++ b/src/wifi/model/block-ack-manager.h
+@@ -342,6 +342,11 @@ class BlockAckManager : public Object
+      * typedef for a callback to invoke when an MPDU is dropped.
+      */
+     typedef Callback<void, Ptr<const WifiMpdu>> DroppedOldMpdu;
++    /**
++     * typedef for a callback to invoke when an MPDU is ack'ed, giving
++     * the link ID of the link the MPDU was successfully sent on.
++     */
++    typedef TracedCallback<Ptr<const WifiMpdu>, uint8_t> MpduAndLinkIdTracedCallback;
+ 
+     /**
+      * \param callback the callback to invoke when a
+@@ -500,6 +505,7 @@ class BlockAckManager : public Object
+     TxOk m_txOkCallback;                                    ///< transmit OK callback
+     TxFailed m_txFailedCallback;                            ///< transmit failed callback
+     DroppedOldMpdu m_droppedOldMpduCallback;                ///< the dropped MPDU callback
++    MpduAndLinkIdTracedCallback m_ackMpduCallback;          ///< the ack callback with link ID
+ 
+     /**
+      * The trace source fired when a state transition occurred.
