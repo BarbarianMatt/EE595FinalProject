@@ -1,7 +1,5 @@
 # Setup Instructions
-The workspace was wsl on windows. The following is the list of commands that I used to create the conda virutal environmetn and setup the files in a way that works. If there is issues in trying to set it up, 
-
-wsl --unregister Ubuntu
+Follow the instructions below to get a WSL with ns3, ns3 ai, and the correct conda virtual environment installed.
 
 wsl --install -d Ubuntu
 
