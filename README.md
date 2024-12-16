@@ -78,9 +78,10 @@ python -m ipykernel install --user --name=project_env --display-name "Python (pr
 install python extension
 install jupyter extension
 
-# if you get errors like, this is because 
-r: no matching function for call to ‘NanoSeconds(ns3::Time)’
-(this may fix the protobuf bug)
+(if you get errors like this)
+r: no matching function for call to ‘NanoSeconds(ns3::Time)’ ... protobuf
+
+(this may fix that bug)
 conda uninstall libprotobuf
 pip uninstall protobuf
 
