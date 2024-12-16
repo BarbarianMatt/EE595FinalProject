@@ -1,3 +1,4 @@
+# Setup Instructions
 The workspace was wsl on windows. The following is the list of commands that I used to create the conda virutal environmetn and setup the files in a way that works. If there is issues in trying to set it up, 
 
 wsl --unregister Ubuntu
@@ -23,7 +24,7 @@ cd ..
 
 sudo apt install -y cmake
 
-# confirms install
+(confirms Install)
 cmake --version (3.28.3)
 
 git checkout -f f4cbb3a74 && git clean -fd
@@ -60,7 +61,7 @@ pip install -e contrib/ai/model/gym-interface/py
 
 ./ns3 build ns3ai_apb_msg_stru
 
-# test with
+(test with)
 cd ./contrib/ai/examples/a-plus-b/use-msg-stru
 python apb.py
 cd ../../../../../
