@@ -1,3 +1,9 @@
+# File Descriptions
+This project contains my copy of the ns3 directiory, as there are several changes to several files used for this project. The edited files are apb.cc, apb.h, apb.py, ns3ai_utils.py, ns3-ai-msg-interface.h
+The code with the ai environment and training is in ns-3-dev/contrib/ai/examples/a-plus-b/use-msg-stru/apb_jupy_fourthtry.ipynb
+
+Sorry for a lack of neatness in any part of this project if anyone is reading this, I just have been working on this project for about 40+ hours this last week, and barely finished in time, and just want to go to bed.
+
 # Setup Instructions
 Follow the instructions below to get a WSL with ns3, ns3 ai, and the correct conda virtual environment installed.
 
